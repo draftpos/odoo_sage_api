@@ -37,11 +37,20 @@ class ResPartner(models.Model):
                 "telephone": record.phone or "",
                 "emailAddress": record.email or "",
                 "postalAddress": {
-                    "physicalAddress1": record.street or "",
-                    "physicalAddress2": record.street2 or "",
-                    "physicalAddress3": record.city or "",
-                    "physicalAddress4": record.state_id.name if record.state_id else "",
-                    "physicalAddress5": record.zip or ""
+                    "line1": record.street or "",
+                    "line2": record.street2 or "",
+                    "line3": record.city or "",
+                    "line4": record.state_id.name if record.state_id else "",
+                    "line5": record.country_id.name if record.country_id else "",
+                    "postalCode": record.zip or ""
+                },
+                "physicalAddress": {
+                    "line1": record.street or "",
+                    "line2": record.street2 or "",
+                    "line3": record.city or "",
+                    "line4": record.state_id.name if record.state_id else "",
+                    "line5": record.country_id.name if record.country_id else "",
+                    "postalCode": record.zip or ""
                 }
             }
             
