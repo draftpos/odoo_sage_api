@@ -34,11 +34,15 @@ class ProductTemplate(models.Model):
             payload = {
                 "code": record.default_code or f"PROD{record.id}",
                 "description": record.name,
-                "type": "Stock",
+                "isWarehouseTracked": True,
+                "isServiceItem": False,
                 "active": record.active,
-                "sellingPrices": {
-                    "priceInclusive": float(record.list_price)
-                }
+                "sellingPrices": [
+                    {
+                        "priceList": "Retail",
+                        "priceExcl": float(record.list_price)
+                    }
+                ]
             }
             
             endpoint = "/inventory"
