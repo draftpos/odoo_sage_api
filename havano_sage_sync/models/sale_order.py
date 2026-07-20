@@ -10,10 +10,17 @@ class SaleOrder(models.Model):
 
     def action_confirm(self):
         res = super(SaleOrder, self).action_confirm()
-        self._push_sales_to_sage()
+        self._push_sales_to_sage(is_create=True)
         return res
 
-    def _push_sales_to_sage(self):
+    def write(self, vals):
+        res = super(SaleOrder, self).write(vals)
+        for order in self:
+            if order.state in ['sale', 'done']:
+                order._push_sales_to_sage(is_create=False)
+        return res
+
+    def _push_sales_to_sage(self, is_create=True):
         enabled = self.env['ir.config_parameter'].sudo().get_param('havano_sage_sync.enabled', default='True')
         if str(enabled).lower() != 'true':
             return
@@ -43,7 +50,6 @@ class SaleOrder(models.Model):
             url = f"{api_url.rstrip('/')}{endpoint}"
             
             try:
-                is_create = True
                 if is_create:
                     response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
                 else:

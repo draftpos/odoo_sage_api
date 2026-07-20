@@ -10,10 +10,17 @@ class PurchaseOrder(models.Model):
 
     def button_confirm(self):
         res = super(PurchaseOrder, self).button_confirm()
-        self._push_purchase_to_sage()
+        self._push_purchase_to_sage(is_create=True)
         return res
 
-    def _push_purchase_to_sage(self):
+    def write(self, vals):
+        res = super(PurchaseOrder, self).write(vals)
+        for order in self:
+            if order.state in ['purchase', 'done']:
+                order._push_purchase_to_sage(is_create=False)
+        return res
+
+    def _push_purchase_to_sage(self, is_create=True):
         enabled = self.env['ir.config_parameter'].sudo().get_param('havano_sage_sync.enabled', default='True')
         if str(enabled).lower() != 'true':
             return
@@ -43,7 +50,10 @@ class PurchaseOrder(models.Model):
             url = f"{api_url.rstrip('/')}{endpoint}"
             
             try:
-                response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
+                if is_create:
+                    response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
+                else:
+                    response = requests.put(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
                 response.raise_for_status()
                 _logger.info("Successfully synced purchase order %s to Sage", order.name)
             except requests.exceptions.RequestException as e:
