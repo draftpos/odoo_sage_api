@@ -43,7 +43,7 @@ class SaleOrder(models.Model):
             url = f"{api_url.rstrip('/')}{endpoint}"
             
             try:
-                response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=timeout)
+                response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
                 response.raise_for_status()
                 _logger.info("Successfully synced sales order %s to Sage", order.name)
             except requests.exceptions.RequestException as e:
