@@ -28,8 +28,7 @@ class ResPartner(models.Model):
         timeout = int(self.env['ir.config_parameter'].sudo().get_param('havano_sage_sync.timeout', default=10))
 
         for record in records:
-            if not record.is_company:
-                continue
+            # No type restriction - sync all partners to Sage
                 
             payload = {
                 "code": record.ref or f"CUST{record.id}",
@@ -60,7 +59,10 @@ class ResPartner(models.Model):
             
             try:
                 # Assuming POST for create, PUT for update (or POST for both if API handles upsert)
-                response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
+                if is_create:
+                    response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
+                else:
+                    response = requests.put(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
                 response.raise_for_status()
                 _logger.info("Successfully synced partner %s to Sage", record.name)
             except requests.exceptions.RequestException as e:

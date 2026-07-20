@@ -45,7 +45,10 @@ class ProductTemplate(models.Model):
             url = f"{api_url.rstrip('/')}{endpoint}"
             
             try:
-                response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
+                if is_create:
+                    response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
+                else:
+                    response = requests.put(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
                 response.raise_for_status()
                 _logger.info("Successfully synced product %s to Sage", record.name)
             except requests.exceptions.RequestException as e:
