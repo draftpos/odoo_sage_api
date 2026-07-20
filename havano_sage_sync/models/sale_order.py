@@ -24,9 +24,9 @@ class SaleOrder(models.Model):
         for order in self:
             payload = {
                 "customerCode": order.partner_id.ref or f"CUST{order.partner_id.id}",
-                "orderNumber": order.name,
-                "date": order.date_order.strftime("%Y-%m-%dT%H:%M:%S") if order.date_order else "",
-                "reference": order.client_order_ref or "",
+                "externalOrderNo": order.name,
+                "orderDate": order.date_order.strftime("%Y-%m-%dT%H:%M:%S") if order.date_order else "",
+                "orderNo": order.client_order_ref or "",
                 "lines": []
             }
             
@@ -36,8 +36,7 @@ class SaleOrder(models.Model):
                 payload["lines"].append({
                     "itemCode": line.product_id.default_code or f"PROD{line.product_id.id}",
                     "quantity": float(line.product_uom_qty),
-                    "unitPrice": float(line.price_unit),
-                    "description": line.name
+                    "unitPrice": float(line.price_unit)
                 })
             
             endpoint = "/sales/orders"
