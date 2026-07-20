@@ -12,7 +12,7 @@ class PurchaseOrder(models.Model):
         for order in self:
             if order.partner_id:
                 # Forcefully sync the customer/supplier first before confirming the order
-                order.partner_id._push_to_sage(is_create=False)
+                order.partner_id._push_to_sage(order.partner_id, is_create=False)
                 
         res = super(PurchaseOrder, self).button_confirm()
         self._push_purchase_to_sage(is_create=True)
