@@ -28,8 +28,8 @@ class ProductTemplate(models.Model):
         timeout = int(self.env['ir.config_parameter'].sudo().get_param('havano_sage_sync.timeout', default=10))
 
         for record in records:
-            if record.type not in ('product', 'consu'):  # Sync storable and consumable goods
-                continue
+            # No type restriction - sync all products to Sage
+
                 
             price_list_name = self.env['ir.config_parameter'].sudo().get_param('havano_sage_sync.price_list_name', default='Retail')
             
