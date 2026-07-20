@@ -48,7 +48,8 @@ class SaleOrder(models.Model):
                 payload["lines"].append({
                     "itemCode": line.product_id.default_code or f"PROD{line.product_id.id}",
                     "quantity": float(line.product_uom_qty),
-                    "unitPrice": float(line.price_unit)
+                    "unitPrice": float(line.price_unit),
+                    "warehouseCode": order.warehouse_id.code if order.warehouse_id else ""
                 })
             
             endpoint = "/sales/orders"
