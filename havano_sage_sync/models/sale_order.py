@@ -1,7 +1,7 @@
 import logging
 import requests
 import json
-from odoo import models, fields
+from odoo import models
 
 _logger = logging.getLogger(__name__)
 
@@ -12,6 +12,11 @@ class SaleOrder(models.Model):
     is_sage_synced = fields.Boolean(string="Sage Synced", default=False, copy=False)
 
     def action_confirm(self):
+        for order in self:
+            if order.partner_id:
+                # Forcefully sync the customer/supplier first before confirming the order
+                order.partner_id._push_to_sage(order.partner_id, is_create=False)
+                
         res = super(SaleOrder, self).action_confirm()
         self._push_sales_to_sage(is_update=False)
         return res
@@ -39,9 +44,9 @@ class SaleOrder(models.Model):
         for order in self:
             payload = {
                 "customerCode": order.partner_id.ref or f"CUST{order.partner_id.id}",
-                "orderNumber": order.name,
-                "date": order.date_order.strftime("%Y-%m-%dT%H:%M:%S") if order.date_order else "",
-                "reference": order.client_order_ref or "",
+                "externalOrderNo": order.name,
+                "orderDate": order.date_order.strftime("%Y-%m-%dT%H:%M:%S") if order.date_order else "",
+                "orderNo": order.client_order_ref or "",
                 "lines": []
             }
             
@@ -52,7 +57,7 @@ class SaleOrder(models.Model):
                     "itemCode": line.product_id.default_code or f"PROD{line.product_id.id}",
                     "quantity": float(line.product_uom_qty),
                     "unitPrice": float(line.price_unit),
-                    "description": line.name
+                    "warehouseCode": order.warehouse_id.code if order.warehouse_id else ""
                 })
             
             endpoint = f"/sales/orders/{order.name}" if is_update else "/sales/orders"
@@ -60,9 +65,9 @@ class SaleOrder(models.Model):
             
             try:
                 if is_update:
-                    response = requests.put(url, json=payload, headers={"Content-Type": "application/json"}, timeout=timeout)
+                    response = requests.put(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
                 else:
-                    response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=timeout)
+                    response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
                 response.raise_for_status()
                 
                 resp_data = response.json() if response.text else {}
@@ -75,5 +80,7 @@ class SaleOrder(models.Model):
                 order.with_context(skip_sage_sync=True).write(vals)
                 _logger.info("Successfully synced sales order %s to Sage (Sage No: %s)", order.name, sage_inv_no)
             except requests.exceptions.RequestException as e:
-                _logger.error("Failed to sync sales order %s to Sage: %s", order.name, str(e))
-                order.message_post(body=f"Sage Sync Failed: {str(e)}")
+                error_detail = e.response.text if hasattr(e, 'response') and e.response is not None else str(e)
+                full_error = f"{str(e)} - Details: {error_detail}"
+                _logger.error("Failed to sync sales order %s to Sage: %s", order.name, full_error)
+                order.message_post(body=f"Sage Sync Failed: {full_error}")
