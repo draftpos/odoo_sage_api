@@ -64,5 +64,7 @@ class ResPartner(models.Model):
                 response.raise_for_status()
                 _logger.info("Successfully synced partner %s to Sage", record.name)
             except requests.exceptions.RequestException as e:
-                _logger.error("Failed to sync partner %s to Sage: %s", record.name, str(e))
-                record.message_post(body=f"Sage Sync Failed: {str(e)}")
+                error_detail = e.response.text if hasattr(e, 'response') and e.response is not None else str(e)
+                full_error = f"{str(e)} - Details: {error_detail}"
+                _logger.error("Failed to sync partner %s to Sage: %s", record.name, full_error)
+                record.message_post(body=f"Sage Sync Failed: {full_error}")

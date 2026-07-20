@@ -47,5 +47,7 @@ class PurchaseOrder(models.Model):
                 response.raise_for_status()
                 _logger.info("Successfully synced purchase order %s to Sage", order.name)
             except requests.exceptions.RequestException as e:
-                _logger.error("Failed to sync purchase order %s to Sage: %s", order.name, str(e))
-                order.message_post(body=f"Sage Sync Failed: {str(e)}")
+                error_detail = e.response.text if hasattr(e, 'response') and e.response is not None else str(e)
+                full_error = f"{str(e)} - Details: {error_detail}"
+                _logger.error("Failed to sync purchase order %s to Sage: %s", order.name, full_error)
+                order.message_post(body=f"Sage Sync Failed: {full_error}")
