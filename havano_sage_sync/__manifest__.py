@@ -18,6 +18,7 @@
     'depends': ['base', 'sale_management', 'purchase', 'stock', 'account'],
     'data': [
         'views/res_config_settings_views.xml',
+        'views/havano_sage_sync_views.xml',
     ],
     'installable': True,
     'application': False,

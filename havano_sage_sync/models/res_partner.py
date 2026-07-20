@@ -8,6 +8,8 @@ _logger = logging.getLogger(__name__)
 class ResPartner(models.Model):
     _inherit = 'res.partner'
 
+    is_sage_synced = fields.Boolean(string="Sage Synced", default=False, copy=False)
+
     @api.model_create_multi
     def create(self, vals_list):
         records = super(ResPartner, self).create(vals_list)
@@ -15,8 +17,16 @@ class ResPartner(models.Model):
         return records
 
     def write(self, vals):
+        if not self.env.context.get('skip_sage_sync') and 'is_sage_synced' not in vals:
+            vals['is_sage_synced'] = False
+        
         result = super(ResPartner, self).write(vals)
-        self._push_to_sage(self, is_create=False)
+        
+        if not self.env.context.get('skip_sage_sync'):
+            # Only push records that are not synced yet
+            unsynced = self.filtered(lambda r: not r.is_sage_synced)
+            if unsynced:
+                self._push_to_sage(unsynced, is_create=False)
         return result
 
     def _push_to_sage(self, records, is_create=True):
@@ -62,6 +72,7 @@ class ResPartner(models.Model):
                 # Assuming POST for create, PUT for update (or POST for both if API handles upsert)
                 response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=timeout)
                 response.raise_for_status()
+                record.with_context(skip_sage_sync=True).write({'is_sage_synced': True})
                 _logger.info("Successfully synced partner %s to Sage", record.name)
             except requests.exceptions.RequestException as e:
                 _logger.error("Failed to sync partner %s to Sage: %s", record.name, str(e))

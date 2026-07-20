@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <!-- Sale Order Tree View -->
+        <record id="view_order_tree_inherit_sage" model="ir.ui.view">
+            <field name="name">sale.order.tree.inherit.sage</field>
+            <field name="model">sale.order</field>
+            <field name="inherit_id" ref="sale.view_order_tree"/>
+            <field name="arch" type="xml">
+                <xpath expr="//field[@name='state']" position="after">
+                    <field name="sage_invoice_number" optional="show"/>
+                    <field name="is_sage_synced" optional="show" widget="boolean_toggle"/>
+                </xpath>
+            </field>
+        </record>
+
+        <!-- Sale Order Quotation Tree View -->
+        <record id="view_quotation_tree_inherit_sage" model="ir.ui.view">
+            <field name="name">sale.order.quotation.tree.inherit.sage</field>
+            <field name="model">sale.order</field>
+            <field name="inherit_id" ref="sale.view_quotation_tree"/>
+            <field name="arch" type="xml">
+                <xpath expr="//field[@name='state']" position="after">
+                    <field name="sage_invoice_number" optional="show"/>
+                    <field name="is_sage_synced" optional="show" widget="boolean_toggle"/>
+                </xpath>
+            </field>
+        </record>
+
+        <!-- Purchase Order Tree View -->
+        <record id="purchase_order_tree_inherit_sage" model="ir.ui.view">
+            <field name="name">purchase.order.tree.inherit.sage</field>
+            <field name="model">purchase.order</field>
+            <field name="inherit_id" ref="purchase.purchase_order_kpis_tree"/>
+            <field name="arch" type="xml">
+                <xpath expr="//field[@name='state']" position="after">
+                    <field name="sage_invoice_number" optional="show"/>
+                    <field name="is_sage_synced" optional="show" widget="boolean_toggle"/>
+                </xpath>
+            </field>
+        </record>
+
+        <!-- Partner Tree View -->
+        <record id="view_partner_tree_inherit_sage" model="ir.ui.view">
+            <field name="name">res.partner.tree.inherit.sage</field>
+            <field name="model">res.partner</field>
+            <field name="inherit_id" ref="base.view_partner_tree"/>
+            <field name="arch" type="xml">
+                <xpath expr="//field[@name='email']" position="after">
+                    <field name="is_sage_synced" optional="show" widget="boolean_toggle"/>
+                </xpath>
+            </field>
+        </record>
+
+        <!-- Product Template Tree View -->
+        <record id="product_template_tree_view_inherit_sage" model="ir.ui.view">
+            <field name="name">product.template.product.tree.inherit.sage</field>
+            <field name="model">product.template</field>
+            <field name="inherit_id" ref="product.product_template_tree_view"/>
+            <field name="arch" type="xml">
+                <xpath expr="//field[@name='type']" position="after">
+                    <field name="is_sage_synced" optional="show" widget="boolean_toggle"/>
+                </xpath>
+            </field>
+        </record>
+    </data>
+</odoo>
