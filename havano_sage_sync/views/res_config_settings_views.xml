@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.havano_sage_sync</field>
+        <field name="model">res.config.settings</field>
+        <field name="priority" eval="90"/>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form" position="inside">
+                <app data-string="Sage Integration" string="Sage Integration" name="havano_sage_sync">
+                    <block title="Havano API Connection" name="sage_api_connection">
+                        <setting id="sage_sync_enabled" help="Enable real-time synchronization with Sage Evolution">
+                            <field name="sage_sync_enabled"/>
+                        </setting>
+                        <setting id="sage_api_url" help="The local network URL for the Havano C# API">
+                            <field name="sage_api_url" widget="url"/>
+                        </setting>
+                        <setting id="sage_timeout" help="Maximum time to wait for the API to respond">
+                            <field name="sage_timeout"/>
+                        </setting>
+                    </block>
+                </app>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="action_sage_sync_configuration" model="ir.actions.act_window">
+        <field name="name">Settings</field>
+        <field name="res_model">res.config.settings</field>
+        <field name="view_mode">form</field>
+        <field name="target">inline</field>
+        <field name="context">{'module' : 'havano_sage_sync', 'bin_size': False}</field>
+    </record>
+
+    <menuitem id="menu_sage_sync_config" name="Sage Integration" parent="base.menu_administration" sequence="99" action="action_sage_sync_configuration"/>
+</odoo>
