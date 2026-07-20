@@ -58,11 +58,12 @@ class ResPartner(models.Model):
             url = f"{api_url.rstrip('/')}{endpoint}"
             
             try:
-                # Assuming POST for create, PUT for update (or POST for both if API handles upsert)
-                if is_create:
+                # Intelligent Upsert: Try PUT (update). If not found, try POST (create).
+                response = requests.put(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
+                if response.status_code != 200 and "not found" in response.text.lower():
+                    # Fallback to POST
                     response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
-                else:
-                    response = requests.put(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
+                
                 response.raise_for_status()
                 _logger.info("Successfully synced partner %s to Sage", record.name)
             except requests.exceptions.RequestException as e:

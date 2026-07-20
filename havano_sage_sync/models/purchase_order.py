@@ -9,6 +9,11 @@ class PurchaseOrder(models.Model):
     _inherit = 'purchase.order'
 
     def button_confirm(self):
+        for order in self:
+            if order.partner_id:
+                # Forcefully sync the customer/supplier first before confirming the order
+                order.partner_id._push_to_sage(is_create=False)
+                
         res = super(PurchaseOrder, self).button_confirm()
         self._push_purchase_to_sage(is_create=True)
         return res
