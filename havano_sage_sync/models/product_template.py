@@ -31,6 +31,8 @@ class ProductTemplate(models.Model):
             if record.type != 'product':  # Only sync storable products
                 continue
                 
+            price_list_name = self.env['ir.config_parameter'].sudo().get_param('havano_sage_sync.price_list_name', default='Retail')
+            
             payload = {
                 "code": record.default_code or f"PROD{record.id}",
                 "description": record.name,
@@ -39,7 +41,7 @@ class ProductTemplate(models.Model):
                 "active": record.active,
                 "sellingPrices": [
                     {
-                        "priceList": "Retail",
+                        "priceList": price_list_name,
                         "priceExcl": float(record.list_price)
                     }
                 ]
