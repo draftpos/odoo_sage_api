@@ -53,7 +53,8 @@ class SaleOrder(models.Model):
                 if is_create:
                     response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
                 else:
-                    response = requests.put(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
+                    put_url = f"{url}/{order.name}"
+                    response = requests.put(put_url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
                 response.raise_for_status()
                 _logger.info("Successfully synced sales order %s to Sage", order.name)
             except requests.exceptions.RequestException as e:
