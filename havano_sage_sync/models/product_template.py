@@ -38,13 +38,7 @@ class ProductTemplate(models.Model):
                 "description": record.name,
                 "isWarehouseTracked": True,
                 "isServiceItem": False,
-                "active": record.active,
-                "sellingPrices": [
-                    {
-                        "priceList": price_list_name,
-                        "priceExcl": float(record.list_price)
-                    }
-                ]
+                "active": record.active
             }
             
             endpoint = "/inventory"
