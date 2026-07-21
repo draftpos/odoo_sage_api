@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_master_sync_wizard_form" model="ir.ui.view">
+        <field name="name">havano.sage.master.sync.wizard.form</field>
+        <field name="model">havano.sage.master.sync.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Master Sage Sync">
+                <sheet>
+                    <div class="oe_title">
+                        <h1>Master Data Sync</h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="direction" widget="radio"/>
+                        </group>
+                    </group>
+                    <group string="Select Data to Sync">
+                        <group>
+                            <field name="sync_customers"/>
+                            <field name="sync_products"/>
+                            <field name="sync_warehouses"/>
+                        </group>
+                        <group>
+                            <field name="sync_sales"/>
+                            <field name="sync_purchases"/>
+                        </group>
+                    </group>
+                    <p class="text-muted">
+                        This operation may take several minutes depending on the volume of data in the databases.
+                        Please do not close Odoo while the synchronization is running.
+                    </p>
+                </sheet>
+                <footer>
+                    <button name="action_start_sync" string="Start Sync" type="object" class="btn-primary" icon="fa-refresh"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_master_sync_wizard" model="ir.actions.act_window">
+        <field name="name">Master Sage Sync</field>
+        <field name="res_model">havano.sage.master.sync.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+</odoo>

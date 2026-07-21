@@ -17,6 +17,8 @@
     'author': 'Your Company',
     'depends': ['base', 'sale_management', 'purchase', 'stock', 'account'],
     'data': [
+        'security/ir.model.access.csv',
+        'wizard/master_sync_wizard_views.xml',
         'views/res_config_settings_views.xml',
         'views/havano_sage_sync_views.xml',
     ],

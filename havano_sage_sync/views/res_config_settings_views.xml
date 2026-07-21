@@ -15,9 +15,15 @@
                         <setting id="sage_api_url" help="The local network URL for the Havano C# API">
                             <field name="sage_api_url" widget="url"/>
                         </setting>
+                        <setting id="sage_webhook_token" help="The secret Bearer token the C# API must provide to push data into Odoo">
+                            <field name="sage_webhook_token"/>
+                        </setting>
                         <setting id="sage_timeout" help="Maximum time to wait for the API to respond">
                             <field name="sage_timeout"/>
                         </setting>
+                        <div class="mt16">
+                            <button name="action_open_master_sync_wizard" string="Open Master Sync Wizard" type="object" class="btn-primary" icon="fa-cogs"/>
+                        </div>
                     </block>
                 </app>
             </xpath>

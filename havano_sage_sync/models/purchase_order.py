@@ -57,7 +57,7 @@ class PurchaseOrder(models.Model):
                     "itemCode": line.product_id.default_code or f"PROD{line.product_id.id}",
                     "quantity": float(line.product_qty),
                     "unitPrice": float(line.price_unit),
-                    "warehouseCode": order.picking_type_id.warehouse_id.code if order.picking_type_id and order.picking_type_id.warehouse_id else ""
+                    "warehouseCode": "Mstr" if order.picking_type_id and order.picking_type_id.warehouse_id and order.picking_type_id.warehouse_id.code == "WH" else (order.picking_type_id.warehouse_id.code if order.picking_type_id and order.picking_type_id.warehouse_id else "")
                 })
             
             endpoint = f"/purchase/orders/{order.name}" if is_update else "/purchase/orders"
@@ -76,6 +76,12 @@ class PurchaseOrder(models.Model):
                 vals = {'is_sage_synced': True}
                 if sage_inv_no:
                     vals['sage_invoice_number'] = sage_inv_no
+                    # Auto-generate invoice in Sage for this order
+                    try:
+                        inv_url = f"{api_url.rstrip('/')}/purchase/orders/{sage_inv_no}/invoice"
+                        requests.post(inv_url, headers={"Content-Type": "application/json"}, timeout=timeout)
+                    except Exception as ie:
+                        _logger.warning("Failed to auto-invoice purchase order %s in Sage: %s", sage_inv_no, str(ie))
                     
                 order.with_context(skip_sage_sync=True).write(vals)
                 _logger.info("Successfully synced purchase order %s to Sage (Sage No: %s)", order.name, sage_inv_no)

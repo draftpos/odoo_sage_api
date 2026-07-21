@@ -57,7 +57,7 @@ class SaleOrder(models.Model):
                     "itemCode": line.product_id.default_code or f"PROD{line.product_id.id}",
                     "quantity": float(line.product_uom_qty),
                     "unitPrice": float(line.price_unit),
-                    "warehouseCode": order.warehouse_id.code if order.warehouse_id else ""
+                    "warehouseCode": "Mstr" if order.warehouse_id and order.warehouse_id.code == "WH" else (order.warehouse_id.code if order.warehouse_id else "")
                 })
             
             endpoint = f"/sales/orders/{order.name}" if is_update else "/sales/orders"
@@ -76,6 +76,12 @@ class SaleOrder(models.Model):
                 vals = {'is_sage_synced': True}
                 if sage_inv_no:
                     vals['sage_invoice_number'] = sage_inv_no
+                    # Auto-generate invoice in Sage for this order
+                    try:
+                        inv_url = f"{api_url.rstrip('/')}/sales/orders/{sage_inv_no}/invoice"
+                        requests.post(inv_url, headers={"Content-Type": "application/json"}, timeout=timeout)
+                    except Exception as ie:
+                        _logger.warning("Failed to auto-invoice sales order %s in Sage: %s", sage_inv_no, str(ie))
                     
                 order.with_context(skip_sage_sync=True).write(vals)
                 _logger.info("Successfully synced sales order %s to Sage (Sage No: %s)", order.name, sage_inv_no)

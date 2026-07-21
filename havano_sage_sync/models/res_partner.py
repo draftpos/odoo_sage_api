@@ -13,7 +13,8 @@ class ResPartner(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         records = super(ResPartner, self).create(vals_list)
-        self._push_to_sage(records, is_create=True)
+        if not self.env.context.get('import_file') and not self.env.context.get('skip_sage_sync'):
+            self._push_to_sage(records, is_create=True)
         return records
 
     def write(self, vals):
