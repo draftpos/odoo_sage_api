@@ -198,7 +198,7 @@ class HavanoSagePoller(models.AbstractModel):
                 order = order_obj.search(['|', ('name', '=', order_no), ('client_order_ref', '=', order_no)], limit=1)
                 
         if order:
-            sage_inv_no = data.get('orderNumber') or data.get('OrderNumber') or data.get('invoiceNumber') or data.get('InvoiceNumber') or order_ref
+            sage_inv_no = data.get('invoiceNumber') or data.get('InvoiceNumber') or data.get('orderNumber') or data.get('OrderNumber') or order_ref
             write_vals = {'is_sage_synced': True}
             if sage_inv_no:
                 write_vals['sage_invoice_number'] = sage_inv_no
@@ -217,7 +217,7 @@ class HavanoSagePoller(models.AbstractModel):
                 order = order_obj.search(['|', ('name', '=', order_no), ('partner_ref', '=', order_no)], limit=1)
                 
         if order:
-            sage_inv_no = data.get('orderNumber') or data.get('OrderNumber') or data.get('invoiceNumber') or data.get('InvoiceNumber') or order_ref
+            sage_inv_no = data.get('invoiceNumber') or data.get('InvoiceNumber') or data.get('orderNumber') or data.get('OrderNumber') or order_ref
             write_vals = {'is_sage_synced': True}
             if sage_inv_no:
                 write_vals['sage_invoice_number'] = sage_inv_no
