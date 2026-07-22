@@ -141,7 +141,7 @@ class HavanoSagePoller(models.AbstractModel):
         vals = {
             'name': data.get('Description') or data.get('description') or sage_id,
             'default_code': sage_id,
-            'type': 'product',
+            'type': 'consu',
             'is_sage_synced': True,
         }
         
