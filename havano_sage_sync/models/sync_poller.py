@@ -191,8 +191,14 @@ class HavanoSagePoller(models.AbstractModel):
         order_obj = self.env['sale.order'].sudo()
         # Match by external order number or by our order name
         order = order_obj.search(['|', ('name', '=', order_ref), ('client_order_ref', '=', order_ref)], limit=1)
+        if not order:
+            # Fallback: if order_ref is the invoice number, look up by orderNo/orderNumber in the data payload
+            order_no = data.get('orderNo') or data.get('OrderNo') or data.get('orderNumber') or data.get('OrderNumber')
+            if order_no:
+                order = order_obj.search(['|', ('name', '=', order_no), ('client_order_ref', '=', order_no)], limit=1)
+                
         if order:
-            sage_inv_no = data.get('orderNumber') or data.get('OrderNumber') or data.get('invoiceNumber')
+            sage_inv_no = data.get('orderNumber') or data.get('OrderNumber') or data.get('invoiceNumber') or data.get('InvoiceNumber') or order_ref
             write_vals = {'is_sage_synced': True}
             if sage_inv_no:
                 write_vals['sage_invoice_number'] = sage_inv_no
@@ -205,8 +211,13 @@ class HavanoSagePoller(models.AbstractModel):
             return
         order_obj = self.env['purchase.order'].sudo()
         order = order_obj.search(['|', ('name', '=', order_ref), ('partner_ref', '=', order_ref)], limit=1)
+        if not order:
+            order_no = data.get('orderNo') or data.get('OrderNo') or data.get('orderNumber') or data.get('OrderNumber')
+            if order_no:
+                order = order_obj.search(['|', ('name', '=', order_no), ('partner_ref', '=', order_no)], limit=1)
+                
         if order:
-            sage_inv_no = data.get('orderNumber') or data.get('OrderNumber') or data.get('invoiceNumber')
+            sage_inv_no = data.get('orderNumber') or data.get('OrderNumber') or data.get('invoiceNumber') or data.get('InvoiceNumber') or order_ref
             write_vals = {'is_sage_synced': True}
             if sage_inv_no:
                 write_vals['sage_invoice_number'] = sage_inv_no

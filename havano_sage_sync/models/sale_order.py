@@ -78,6 +78,9 @@ class SaleOrder(models.Model):
             endpoint = "/Sales/orders"
             url = f"{api_url.rstrip('/')}{endpoint}"
             
+            # Log payload for diagnostics
+            _logger.info("Sage Sales Order POST Payload for %s: %s", order.name, json.dumps(payload))
+            
             try:
                 if is_update:
                     response = requests.put(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
