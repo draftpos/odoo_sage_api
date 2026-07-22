@@ -17,6 +17,7 @@ class MasterSyncWizard(models.TransientModel):
     sync_customers = fields.Boolean("Customers & Suppliers", default=True)
     sync_products = fields.Boolean("Inventory Products", default=False)
     sync_warehouses = fields.Boolean("Warehouses", default=False)
+    sync_agents = fields.Boolean("Agents (Salespersons)", default=False)
     sync_sales = fields.Boolean("Sales Orders", default=False)
     sync_purchases = fields.Boolean("Purchase Orders", default=False)
     
@@ -34,6 +35,8 @@ class MasterSyncWizard(models.TransientModel):
                 results.append(self._pull_products(api_url, timeout))
             if self.sync_warehouses:
                 results.append(self._pull_warehouses(api_url, timeout))
+            if self.sync_agents:
+                results.append(self._pull_agents(api_url, timeout))
             if self.sync_sales:
                 results.append(self._pull_sales(api_url, timeout))
             if self.sync_purchases:
@@ -122,6 +125,55 @@ class MasterSyncWizard(models.TransientModel):
             messages.append(f"Error Suppliers: {str(e)}")
 
         return " | ".join(messages) if messages else "No Customers or Suppliers found."
+
+    def _pull_agents(self, api_url, timeout):
+        messages = []
+        User = self.env['res.users'].sudo()
+        
+        try:
+            url = f"{api_url.rstrip('/')}/Agents"
+            resp = requests.get(url, timeout=timeout)
+            resp.raise_for_status()
+            agents = resp.json()
+            if agents:
+                created = 0
+                updated = 0
+                for agent in agents:
+                    # Depending on API return, it might have id, code, description, name
+                    agent_id = agent.get('id') or agent.get('code')
+                    if not agent_id:
+                        continue
+                        
+                    name = agent.get('name') or agent.get('description') or str(agent_id)
+                    email = agent.get('email') or f"agent_{agent_id}@example.com"
+                    login = agent.get('login') or email
+                    
+                    # Try to find by sage_agent_id or login
+                    existing = User.search([('sage_agent_id', '=', int(agent_id) if str(agent_id).isdigit() else 0)], limit=1)
+                    if not existing:
+                        existing = User.search([('login', '=', login)], limit=1)
+                        
+                    if existing:
+                        existing.write({'sage_agent_id': int(agent_id) if str(agent_id).isdigit() else 0})
+                        updated += 1
+                    else:
+                        new_user = User.create({
+                            'name': name,
+                            'login': login,
+                            'sage_agent_id': int(agent_id) if str(agent_id).isdigit() else 0,
+                        })
+                        try:
+                            group = self.env.ref('sales_team.group_sale_salesman', raise_if_not_found=False)
+                            if group:
+                                group.sudo().write({'users': [(4, new_user.id)]})
+                        except Exception as ge:
+                            _logger.warning("Could not assign salesman group to new user: %s", ge)
+                        created += 1
+                messages.append(f"Agents: Created {created}, Updated {updated} of {len(agents)}.")
+        except Exception as e:
+            messages.append(f"Error Agents: {str(e)}")
+            
+        return "\n".join(messages)
             
     def _pull_products(self, api_url, timeout):
         try:

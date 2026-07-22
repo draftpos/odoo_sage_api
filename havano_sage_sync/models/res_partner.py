@@ -13,6 +13,10 @@ class ResPartner(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         records = super(ResPartner, self).create(vals_list)
+        # Auto-generate ref for any partner that doesn't have one
+        for record in records:
+            if not record.ref:
+                record.with_context(skip_sage_sync=True).write({'ref': f'CUST{record.id:05d}'})
         if not self.env.context.get('import_file') and not self.env.context.get('skip_sage_sync'):
             self._push_to_sage(records, is_create=True)
         return records
@@ -80,6 +84,19 @@ class ResPartner(models.Model):
                 _logger.info("Successfully synced partner %s to Sage", record.name)
             except requests.exceptions.RequestException as e:
                 error_detail = e.response.text if hasattr(e, 'response') and e.response is not None else str(e)
+                status_code = e.response.status_code if hasattr(e, 'response') and e.response is not None else 0
                 full_error = f"{str(e)} - Details: {error_detail}"
                 _logger.error("Failed to sync partner %s to Sage: %s", record.name, full_error)
                 record.message_post(body=f"Sage Sync Failed: {full_error}")
+                
+                # If network error or server error, queue it
+                if status_code == 0 or status_code >= 500:
+                    self.env['havano.sage.queue'].sudo().create({
+                        'name': record.name,
+                        'res_model': 'res.partner',
+                        'res_id': record.id,
+                        'payload': json.dumps(payload),
+                        'endpoint': endpoint,
+                        'method': 'post' if is_create else 'put',
+                        'state': 'pending'
+                    })

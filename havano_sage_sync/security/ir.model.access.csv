@@ -1,2 +1,4 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_havano_sage_master_sync_wizard,havano.sage.master.sync.wizard,model_havano_sage_master_sync_wizard,base.group_user,1,1,1,1
+access_havano_sage_queue,havano.sage.queue,model_havano_sage_queue,base.group_user,1,1,1,1
+access_havano_sage_poller,havano.sage.poller,model_havano_sage_poller,base.group_user,1,1,1,1

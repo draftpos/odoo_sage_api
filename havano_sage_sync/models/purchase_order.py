@@ -13,9 +13,14 @@ class PurchaseOrder(models.Model):
 
     def button_confirm(self):
         for order in self:
-            if order.partner_id:
+            if order.partner_id and not order.partner_id.is_sage_synced:
                 # Forcefully sync the customer/supplier first before confirming the order
                 order.partner_id._push_to_sage(order.partner_id, is_create=False)
+            
+            # Sync unsynced products
+            for line in order.order_line:
+                if line.product_id and not line.product_id.is_sage_synced:
+                    line.product_id.product_tmpl_id._push_to_sage(line.product_id.product_tmpl_id, is_create=False)
                 
         res = super(PurchaseOrder, self).button_confirm()
         self._push_purchase_to_sage(is_update=False)
@@ -29,7 +34,8 @@ class PurchaseOrder(models.Model):
         
         if not self.env.context.get('skip_sage_sync'):
             for order in self:
-                if order.state in ['purchase', 'done'] and not order.sage_invoice_number and not order.is_sage_synced:
+                if order.state in ['purchase', 'done'] and order.sage_invoice_number and not order.is_sage_synced:
+                    # Only do PUT (is_update=True) if it ALREADY has a sage_invoice_number!
                     order._push_purchase_to_sage(is_update=True)
         return res
 
@@ -42,25 +48,34 @@ class PurchaseOrder(models.Model):
         timeout = int(self.env['ir.config_parameter'].sudo().get_param('havano_sage_sync.timeout', default=10))
 
         for order in self:
+            agent_id = order.user_id.sage_agent_id if hasattr(order, 'user_id') and order.user_id and hasattr(order.user_id, 'sage_agent_id') and order.user_id.sage_agent_id else None
+
             payload = {
                 "supplierCode": order.partner_id.ref or f"CUST{order.partner_id.id}",
-                "externalOrderNo": order.name,
-                "orderDate": order.date_order.strftime("%Y-%m-%dT%H:%M:%S") if order.date_order else "",
+                "externalOrderNo": order.name or "",
+                "orderDate": order.date_order.strftime("%Y-%m-%dT%H:%M:%S") if order.date_order else None,
                 "orderNo": order.partner_ref or "",
+                "agentId": agent_id,
+                "taxTypeId": 1,
                 "lines": []
             }
             
             for line in order.order_line:
                 if not line.product_id:
                     continue
+                warehouse_code = order.picking_type_id.warehouse_id.code if order.picking_type_id and order.picking_type_id.warehouse_id else "Mstr"
+                if warehouse_code == "WH":
+                    warehouse_code = "Mstr"
+                    
                 payload["lines"].append({
                     "itemCode": line.product_id.default_code or f"PROD{line.product_id.id}",
                     "quantity": float(line.product_qty),
                     "unitPrice": float(line.price_unit),
-                    "warehouseCode": "Mstr" if order.picking_type_id and order.picking_type_id.warehouse_id and order.picking_type_id.warehouse_id.code == "WH" else (order.picking_type_id.warehouse_id.code if order.picking_type_id and order.picking_type_id.warehouse_id else "")
+                    "taxTypeID": 1,
+                    "warehouseCode": warehouse_code
                 })
             
-            endpoint = f"/purchase/orders/{order.name}" if is_update else "/purchase/orders"
+            endpoint = "/Purchase/orders"
             url = f"{api_url.rstrip('/')}{endpoint}"
             
             try:
@@ -79,14 +94,68 @@ class PurchaseOrder(models.Model):
                     # Auto-generate invoice in Sage for this order
                     try:
                         inv_url = f"{api_url.rstrip('/')}/purchase/orders/{sage_inv_no}/invoice"
-                        requests.post(inv_url, headers={"Content-Type": "application/json"}, timeout=timeout)
+                        inv_resp = requests.post(inv_url, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
+                        inv_resp.raise_for_status()
+                        
+                        # C# API returns the generated invoice number in the response text or JSON
+                        if inv_resp.text:
+                            try:
+                                inv_data = inv_resp.json()
+                                if isinstance(inv_data, dict):
+                                    real_inv_no = inv_data.get('invoiceNumber') or inv_data.get('orderNumber') or inv_resp.text
+                                else:
+                                    real_inv_no = str(inv_data)
+                            except Exception:
+                                real_inv_no = inv_resp.text.strip('\"')
+                            
+                            if real_inv_no:
+                                vals['sage_invoice_number'] = real_inv_no
                     except Exception as ie:
                         _logger.warning("Failed to auto-invoice purchase order %s in Sage: %s", sage_inv_no, str(ie))
+                        # If invoicing fails due to network, queue the invoice generation call
+                        status_code = ie.response.status_code if hasattr(ie, 'response') and ie.response is not None else 0
+                        if status_code == 0 or status_code >= 500:
+                            self.env['havano.sage.queue'].sudo().create({
+                                'name': f"Invoice: {order.name}",
+                                'res_model': 'purchase.order',
+                                'res_id': order.id,
+                                'payload': '{}',
+                                'endpoint': f"/purchase/orders/{sage_inv_no}/invoice",
+                                'method': 'post',
+                                'state': 'pending'
+                            })
                     
                 order.with_context(skip_sage_sync=True).write(vals)
-                _logger.info("Successfully synced purchase order %s to Sage (Sage No: %s)", order.name, sage_inv_no)
+                _logger.info("Successfully synced purchase order %s to Sage (Sage No: %s)", order.name, vals.get('sage_invoice_number', sage_inv_no))
             except requests.exceptions.RequestException as e:
+                # Handle friendly errors or queue if offline
                 error_detail = e.response.text if hasattr(e, 'response') and e.response is not None else str(e)
-                full_error = f"{str(e)} - Details: {error_detail}"
-                _logger.error("Failed to sync purchase order %s to Sage: %s", order.name, full_error)
-                order.message_post(body=f"Sage Sync Failed: {full_error}")
+                status_code = e.response.status_code if hasattr(e, 'response') and e.response is not None else 0
+                
+                # If network error or timeout, queue it
+                if status_code == 0 or status_code >= 500:
+                    self.env['havano.sage.queue'].sudo().create({
+                        'name': f'Purchase Order {order.name}',
+                        'res_model': 'purchase.order',
+                        'res_id': order.id,
+                        'payload': json.dumps(payload),
+                        'endpoint': endpoint,
+                        'method': 'put' if is_update else 'post',
+                        'error_message': f'Queued due to: {str(e)}'
+                    })
+                    order.message_post(body=f"Sage Sync Queued: Network error or server offline. Will retry automatically.")
+                else:
+                    # Clean up 400 Bad Request JSON
+                    try:
+                        err_json = json.loads(error_detail)
+                        friendly_msg = err_json.get('message') or err_json.get('title') or str(err_json)
+                    except Exception:
+                        friendly_msg = error_detail[:200] if error_detail else "Unknown Error (Please verify your network connection and payload)"
+                        
+                    if status_code == 405:
+                        friendly_msg = f"API Endpoint configuration error (Method Not Allowed). Method {'PUT' if is_update else 'POST'} not allowed on {endpoint}."
+                        
+                    full_error = f"Sage rejected the sync: {friendly_msg}"
+                    _logger.error("Failed to sync purchase order %s to Sage: %s", order.name, full_error)
+                    order.message_post(body=f"Sage Sync Failed: {full_error}. Please correct the issue and manually retry if needed.")
+                    # Do NOT raise UserError here so the Odoo workflow can continue!

@@ -18,9 +18,11 @@
     'depends': ['base', 'sale_management', 'purchase', 'stock', 'account'],
     'data': [
         'security/ir.model.access.csv',
+        'data/cron.xml',
         'wizard/master_sync_wizard_views.xml',
         'views/res_config_settings_views.xml',
         'views/havano_sage_sync_views.xml',
+        'views/res_users_views.xml',
     ],
     'installable': True,
     'application': False,

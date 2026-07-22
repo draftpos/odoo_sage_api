@@ -19,6 +19,7 @@
                             <field name="sync_customers"/>
                             <field name="sync_products"/>
                             <field name="sync_warehouses"/>
+                            <field name="sync_agents"/>
                         </group>
                         <group>
                             <field name="sync_sales"/>
