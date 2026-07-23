@@ -8,7 +8,8 @@ _logger = logging.getLogger(__name__)
 class PurchaseOrder(models.Model):
     _inherit = 'purchase.order'
 
-    sage_invoice_number = fields.Char(string="Sage Invoice Number", readonly=True, copy=False)
+    sage_invoice_number = fields.Char(string="Sage PO Number", readonly=True, copy=False)
+    sage_grv_number = fields.Char(string="GRV Number", copy=False, help="GRV number assigned by Sage Evolution. Can be entered manually from Sage Purchase Order Maintenance.")
     is_sage_synced = fields.Boolean(string="Sage Synced", default=False, copy=False)
 
     def button_confirm(self):
@@ -17,10 +18,13 @@ class PurchaseOrder(models.Model):
                 # Forcefully sync the customer/supplier first before confirming the order
                 order.partner_id._push_to_sage(order.partner_id, is_create=False)
             
-            # Sync unsynced products
+            # Sync ALL products on this PO to Sage before creating the PO
+            # This ensures Sage knows about the product before we try to create the PO
             for line in order.order_line:
-                if line.product_id and not line.product_id.is_sage_synced:
-                    line.product_id.product_tmpl_id._push_to_sage(line.product_id.product_tmpl_id, is_create=False)
+                if line.product_id:
+                    tmpl = line.product_id.product_tmpl_id
+                    # Always force-sync product to ensure it exists in Sage
+                    tmpl._push_to_sage(tmpl, is_create=not tmpl.is_sage_synced)
                 
         res = super(PurchaseOrder, self).button_confirm()
         self._push_purchase_to_sage(is_update=False)
@@ -56,7 +60,6 @@ class PurchaseOrder(models.Model):
                 "orderDate": order.date_order.strftime("%Y-%m-%dT%H:%M:%S") if order.date_order else None,
                 "orderNo": order.partner_ref or "",
                 "agentId": agent_id,
-                "taxTypeId": 1,
                 "lines": []
             }
             
@@ -80,7 +83,9 @@ class PurchaseOrder(models.Model):
             
             try:
                 if is_update:
-                    response = requests.put(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
+                    _logger.warning(f"Sage API does not support updates yet. Skipping sync for {order.name}")
+                    order.message_post(body="Sage Sync: Updates are not currently supported by the Sage API. Changes made in Odoo will not be reflected in Sage.")
+                    continue
                 else:
                     response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
                 response.raise_for_status()
@@ -89,42 +94,42 @@ class PurchaseOrder(models.Model):
                 sage_inv_no = resp_data.get('orderNumber')
                 
                 vals = {'is_sage_synced': True}
-                if sage_inv_no:
+                # On PUT (update), never overwrite an existing real invoice number (INV...) with
+                # the order number returned by the C# API. Only set from POST responses on new orders.
+                if sage_inv_no and not is_update:
                     vals['sage_invoice_number'] = sage_inv_no
-                    # Auto-generate invoice in Sage for this order
-                    try:
-                        inv_url = f"{api_url.rstrip('/')}/purchase/orders/{sage_inv_no}/invoice"
-                        inv_resp = requests.post(inv_url, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
-                        inv_resp.raise_for_status()
-                        
-                        # C# API returns the generated invoice number in the response text or JSON
-                        if inv_resp.text:
-                            try:
-                                inv_data = inv_resp.json()
-                                if isinstance(inv_data, dict):
-                                    real_inv_no = inv_data.get('invoiceNumber') or inv_data.get('orderNumber') or inv_resp.text
-                                else:
-                                    real_inv_no = str(inv_data)
-                            except Exception:
-                                real_inv_no = inv_resp.text.strip('\"')
-                            
-                            if real_inv_no:
-                                vals['sage_invoice_number'] = real_inv_no
-                    except Exception as ie:
-                        _logger.warning("Failed to auto-invoice purchase order %s in Sage: %s", sage_inv_no, str(ie))
-                        # If invoicing fails due to network, queue the invoice generation call
-                        status_code = ie.response.status_code if hasattr(ie, 'response') and ie.response is not None else 0
-                        if status_code == 0 or status_code >= 500:
-                            self.env['havano.sage.queue'].sudo().create({
-                                'name': f"Invoice: {order.name}",
-                                'res_model': 'purchase.order',
-                                'res_id': order.id,
-                                'payload': '{}',
-                                'endpoint': f"/purchase/orders/{sage_inv_no}/invoice",
-                                'method': 'post',
-                                'state': 'pending'
-                            })
                     
+                    # Auto-process the GRV in Sage right after creating the PO
+                    grv_payload = {
+                        "orderNumber": sage_inv_no,
+                        "externalOrderNo": order.name,
+                        "supplierInvoiceNo": order.partner_ref or "",
+                        "lines": [
+                            {
+                                "itemCode": l["itemCode"],
+                                "quantityToProcess": int(l["quantity"]),
+                                "warehouseCode": l["warehouseCode"]
+                            } for l in payload.get("lines", [])
+                        ]
+                    }
+                    grv_url = f"{api_url.rstrip('/')}/Purchase/orders/grv"
+                    try:
+                        _logger.info("Waiting 3s for Sage to commit PO %s before processing GRV...", order.name)
+                        import time
+                        time.sleep(3)
+                        _logger.info("Sending GRV payload for %s: %s", order.name, json.dumps(grv_payload))
+                        grv_resp = requests.post(grv_url, json=grv_payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=30)
+                        grv_resp.raise_for_status()
+                        grv_data = grv_resp.json() if grv_resp.text else {}
+                        grv_number = grv_data.get('grvNumber') or grv_data.get('GrvNumber') or grv_data.get('grv_number')
+                        if grv_number:
+                            vals['sage_grv_number'] = grv_number
+                            _logger.info("Auto-captured GRV number %s for PO %s", grv_number, order.name)
+                        else:
+                            _logger.info("GRV processed for PO %s (no GRV number in response)", order.name)
+                    except Exception as e:
+                        _logger.warning("Failed to auto-process GRV in Sage for PO %s: %s", order.name, str(e))
+
                 order.with_context(skip_sage_sync=True).write(vals)
                 _logger.info("Successfully synced purchase order %s to Sage (Sage No: %s)", order.name, vals.get('sage_invoice_number', sage_inv_no))
             except requests.exceptions.RequestException as e:

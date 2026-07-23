@@ -60,29 +60,36 @@ class ProductTemplate(models.Model):
             url = f"{api_url.rstrip('/')}{endpoint}"
             
             try:
-                # Intelligent Upsert: Try PUT (update). If not found, try POST (create).
+                # Intelligent Upsert: Try PUT (update). If not found (404/500), fallback to POST (create).
                 response = requests.put(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
-                if response.status_code != 200 and "not found" in response.text.lower():
+                if response.status_code not in (200, 204) and ("not found" in response.text.lower() or "stock item" in response.text.lower()):
                     # Fallback to POST
                     response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
                 
                 response.raise_for_status()
+                is_new_product = response.status_code == 201
                 record.with_context(skip_sage_sync=True).write({'is_sage_synced': True})
                 _logger.info("Successfully synced product %s to Sage", record.name)
                 
-                # Auto-assign to default warehouse (Mstr) using new V20 API endpoint
-                try:
-                    wh_payload = {
-                        "itemCode": payload["code"],
-                        "warehouseCode": "Mstr"
-                    }
-                    wh_url = f"{api_url.rstrip('/')}/Inventory/warehouse"
-                    wh_resp = requests.post(wh_url, json=wh_payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
-                    wh_resp.raise_for_status()
-                    _logger.info("Successfully linked product %s to Mstr warehouse", record.name)
-                except requests.exceptions.RequestException as wh_e:
-                    wh_error = wh_e.response.text if hasattr(wh_e, 'response') and wh_e.response is not None else str(wh_e)
-                    _logger.warning("Could not link product %s to warehouse Mstr: %s", record.name, wh_error)
+                # Only link to warehouse if this was a brand new product (POST = 201)
+                # For existing products (PUT = 200), they are already linked - skip to avoid error
+                if is_new_product:
+                    try:
+                        wh_payload = {
+                            "itemCode": payload["code"],
+                            "warehouseCode": "Mstr"
+                        }
+                        wh_url = f"{api_url.rstrip('/')}/Inventory/warehouse"
+                        wh_resp = requests.post(wh_url, json=wh_payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
+                        # 500 with "already linked" message = already correct, not an actual error
+                        if wh_resp.status_code == 500 and "already" in wh_resp.text.lower():
+                            _logger.info("Product %s already linked to Mstr warehouse", record.name)
+                        else:
+                            wh_resp.raise_for_status()
+                            _logger.info("Successfully linked product %s to Mstr warehouse", record.name)
+                    except requests.exceptions.RequestException as wh_e:
+                        wh_error = wh_e.response.text if hasattr(wh_e, 'response') and wh_e.response is not None else str(wh_e)
+                        _logger.warning("Could not link product %s to warehouse Mstr: %s", record.name, wh_error)
                     
             except requests.exceptions.RequestException as e:
                 error_detail = e.response.text if hasattr(e, 'response') and e.response is not None else str(e)

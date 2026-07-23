@@ -1,6 +1,6 @@
 import logging
 import requests
-from odoo import models, fields
+from odoo import models, fields, api
 
 _logger = logging.getLogger(__name__)
 
@@ -45,6 +45,7 @@ class ResUsers(models.Model):
             except Exception as e:
                 _logger.warning("Error pushing user '%s' to Sage Agents: %s", user.name, str(e))
 
+    @api.model_create_multi
     def create(self, vals_list):
         users = super(ResUsers, self).create(vals_list)
         if not self.env.context.get('skip_sage_sync'):

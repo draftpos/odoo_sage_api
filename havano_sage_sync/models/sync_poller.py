@@ -75,6 +75,8 @@ class HavanoSagePoller(models.AbstractModel):
                         self._sync_sales_order(sage_id, data, action)
                     elif record_type in ("purchaseorder", "purchaseinvoice", "order"):
                         self._sync_purchase_order(sage_id, data, action)
+                    elif record_type == "quotation":
+                        self._sync_sales_order(sage_id, data, action, is_quote=True)
                     else:
                         _logger.warning("Unknown entity type %s for change ID %s", record_type, change_id)
                 except Exception as model_ex:
@@ -182,15 +184,30 @@ class HavanoSagePoller(models.AbstractModel):
             user.with_context(skip_sage_sync=True).write({'name': name})
             _logger.info("Updated Odoo user '%s' from Sage Agent change.", name)
         else:
-            _logger.info("No matching Odoo user found for Sage Agent '%s' — skipping.", name)
+            try:
+                email = data.get('email') or data.get('Email') or f"agent_{sage_id}@havano.local"
+                new_user = user_obj.with_context(skip_sage_sync=True).create({
+                    'name': name,
+                    'login': email,
+                    'sage_agent_id': int(sage_id) if str(sage_id).isdigit() else 0,
+                })
+                group = self.env.ref('sales_team.group_sale_salesman', raise_if_not_found=False)
+                if group:
+                    group.sudo().write({'users': [(4, new_user.id)]})
+                _logger.info("Created missing Odoo user '%s' from Sage Agent.", name)
+            except Exception as e:
+                _logger.warning("Could not create missing Odoo user '%s': %s", name, str(e))
 
-    def _sync_sales_order(self, order_ref, data, action):
-        """Update a Sales Order in Odoo when Sage reports a change (e.g. invoice number assigned)."""
+    def _sync_sales_order(self, order_ref, data, action, is_quote=False):
+        """Update a Sales Order/Quotation in Odoo when Sage reports a change (e.g. invoice number assigned)."""
         if not data:
             return
         order_obj = self.env['sale.order'].sudo()
-        # Match by external order number or by our order name
-        order = order_obj.search(['|', ('name', '=', order_ref), ('client_order_ref', '=', order_ref)], limit=1)
+        order = None
+        # Only match by order_ref if it is not empty/falsy to prevent matching empty references
+        if order_ref:
+            order = order_obj.search(['|', ('name', '=', order_ref), ('client_order_ref', '=', order_ref)], limit=1)
+            
         if not order:
             # Fallback: if order_ref is the invoice number, look up by orderNo/orderNumber in the data payload
             order_no = data.get('orderNo') or data.get('OrderNo') or data.get('orderNumber') or data.get('OrderNumber')
@@ -204,13 +221,66 @@ class HavanoSagePoller(models.AbstractModel):
                 write_vals['sage_invoice_number'] = sage_inv_no
             order.with_context(skip_sage_sync=True).write(write_vals)
             _logger.info("Updated Odoo Sales Order %s from Sage change (Sage Inv: %s).", order.name, sage_inv_no)
+        else:
+            # Auto-create missing Sales Order
+            account_id = (data.get('accountID') or data.get('AccountID') or '').strip()
+            if not account_id:
+                _logger.warning("Cannot create missing sales order %s without an account ID", order_ref)
+                return
+            
+            Partner = self.env['res.partner'].sudo()
+            customer = Partner.search(['|', ('ref', '=', account_id), ('name', '=ilike', account_id)], limit=1)
+            if not customer:
+                customer = Partner.with_context(skip_sage_sync=True).create({'name': account_id, 'ref': account_id, 'is_customer': True})
+            
+            lines = data.get('lines') or data.get('Lines') or []
+            order_lines = []
+            Product = self.env['product.product'].sudo()
+            for line in lines:
+                item_code = (line.get('itemCode') or line.get('ItemCode') or '').strip()
+                qty = line.get('quantity') or line.get('Quantity') or 1.0
+                price = line.get('price') or line.get('Price') or 0.0
+                
+                product = Product.search([('default_code', '=', item_code)], limit=1)
+                if not product:
+                    product = Product.search([('name', '=ilike', item_code)], limit=1)
+                    
+                if product:
+                    order_lines.append((0, 0, {
+                        'product_id': product.id,
+                        'product_uom_qty': qty,
+                        'price_unit': price,
+                    }))
+            
+            if order_lines:
+                try:
+                    with self.env.cr.savepoint():
+                        new_order = order_obj.with_context(skip_sage_sync=True).create({
+                            'partner_id': customer.id,
+                            'client_order_ref': order_ref,
+                            'is_sage_synced': True,
+                            'order_line': order_lines,
+                        })
+                        if not is_quote and not data.get('isQuotation'):
+                            new_order.with_context(skip_sage_sync=True).action_confirm()
+                            invoices = new_order.with_context(skip_sage_sync=True)._create_invoices()
+                            for inv in invoices:
+                                inv.with_context(skip_sage_sync=True).action_post()
+                            _logger.info("Created and invoiced missing Odoo Sales Order %s from Sage", order_ref)
+                        else:
+                            _logger.info("Created missing Odoo Sales Quotation %s from Sage", order_ref)
+                except Exception as e:
+                    _logger.warning("Failed to create missing sales order %s: %s", order_ref, str(e))
 
     def _sync_purchase_order(self, order_ref, data, action):
         """Update a Purchase Order in Odoo when Sage reports a change (e.g. invoice number assigned)."""
         if not data:
             return
         order_obj = self.env['purchase.order'].sudo()
-        order = order_obj.search(['|', ('name', '=', order_ref), ('partner_ref', '=', order_ref)], limit=1)
+        order = None
+        if order_ref:
+            order = order_obj.search(['|', ('name', '=', order_ref), ('partner_ref', '=', order_ref)], limit=1)
+            
         if not order:
             order_no = data.get('orderNo') or data.get('OrderNo') or data.get('orderNumber') or data.get('OrderNumber')
             if order_no:
@@ -218,11 +288,61 @@ class HavanoSagePoller(models.AbstractModel):
                 
         if order:
             sage_inv_no = data.get('invoiceNumber') or data.get('InvoiceNumber') or data.get('orderNumber') or data.get('OrderNumber') or order_ref
+            grv_number = data.get('grvNumber') or data.get('GrvNumber') or data.get('grv') or data.get('GRV') or data.get('grvNo') or data.get('GrvNo')
             write_vals = {'is_sage_synced': True}
             if sage_inv_no:
                 write_vals['sage_invoice_number'] = sage_inv_no
+            if grv_number:
+                write_vals['sage_grv_number'] = grv_number
             order.with_context(skip_sage_sync=True).write(write_vals)
-            _logger.info("Updated Odoo Purchase Order %s from Sage change (Sage Inv: %s).", order.name, sage_inv_no)
+            _logger.info("Updated Odoo Purchase Order %s from Sage change (Sage Inv: %s, GRV: %s).", order.name, sage_inv_no, grv_number)
+        else:
+            # Auto-create missing Purchase Order
+            account_id = (data.get('accountID') or data.get('AccountID') or '').strip()
+            if not account_id:
+                _logger.warning("Cannot create missing purchase order %s without an account ID", order_ref)
+                return
+            
+            Partner = self.env['res.partner'].sudo()
+            supplier = Partner.search(['|', ('ref', '=', account_id), ('name', '=ilike', account_id)], limit=1)
+            if not supplier:
+                supplier = Partner.with_context(skip_sage_sync=True).create({'name': account_id, 'ref': account_id, 'is_supplier': True})
+            
+            lines = data.get('lines') or data.get('Lines') or []
+            order_lines = []
+            Product = self.env['product.product'].sudo()
+            for line in lines:
+                item_code = (line.get('itemCode') or line.get('ItemCode') or '').strip()
+                qty = line.get('quantity') or line.get('Quantity') or 1.0
+                price = line.get('price') or line.get('Price') or 0.0
+                
+                product = Product.search([('default_code', '=', item_code)], limit=1)
+                if not product:
+                    product = Product.search([('name', '=ilike', item_code)], limit=1)
+                    
+                if product:
+                    order_lines.append((0, 0, {
+                        'product_id': product.id,
+                        'product_qty': qty,
+                        'price_unit': price,
+                    }))
+            
+            if order_lines:
+                try:
+                    with self.env.cr.savepoint():
+                        new_po = order_obj.with_context(skip_sage_sync=True).create({
+                            'partner_id': supplier.id,
+                            'partner_ref': order_ref,
+                            'is_sage_synced': True,
+                            'order_line': order_lines,
+                        })
+                        new_po.with_context(skip_sage_sync=True).button_confirm()
+                        new_po.with_context(skip_sage_sync=True).action_create_invoice()
+                        for inv in new_po.invoice_ids:
+                            inv.with_context(skip_sage_sync=True).action_post()
+                        _logger.info("Created and billed missing Odoo Purchase Order %s from Sage", order_ref)
+                except Exception as e:
+                    _logger.warning("Failed to create missing purchase order %s: %s", order_ref, str(e))
 
     def _sync_order(self, sage_id, data, action):
         """Legacy dispatcher — kept for backward compatibility."""

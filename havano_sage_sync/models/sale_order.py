@@ -63,7 +63,10 @@ class SaleOrder(models.Model):
             for line in order.order_line:
                 if not line.product_id:
                     continue
-                warehouse_code = order.warehouse_id.code if order.warehouse_id else "Mstr"
+                if hasattr(order, 'warehouse_id') and order.warehouse_id:
+                    warehouse_code = order.warehouse_id.code
+                else:
+                    warehouse_code = "Mstr"
                 if warehouse_code == "WH":
                     warehouse_code = "Mstr"
                     
@@ -83,7 +86,9 @@ class SaleOrder(models.Model):
             
             try:
                 if is_update:
-                    response = requests.put(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
+                    _logger.warning(f"Sage API does not support updates yet. Skipping sync for {order.name}")
+                    order.message_post(body="Sage Sync: Updates are not currently supported by the Sage API. Changes made in Odoo will not be reflected in Sage.")
+                    continue
                 else:
                     response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
                 response.raise_for_status()
@@ -92,44 +97,14 @@ class SaleOrder(models.Model):
                 sage_inv_no = resp_data.get('orderNumber')
                 
                 vals = {'is_sage_synced': True}
-                if sage_inv_no:
+                # On PUT (update), never overwrite an existing real invoice number (INV...) with
+                # the order number returned by the C# API — the PUT response only returns orderNumber.
+                # Only set sage_invoice_number from POST responses on new orders.
+                if sage_inv_no and not is_update:
                     vals['sage_invoice_number'] = sage_inv_no
-                    # Auto-generate invoice in Sage for this order
-                    try:
-                        inv_url = f"{api_url.rstrip('/')}/sales/orders/{sage_inv_no}/invoice"
-                        inv_resp = requests.post(inv_url, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
-                        inv_resp.raise_for_status()
-                        
-                        # C# API returns the generated invoice number (e.g. INV2726) in the response text or JSON
-                        if inv_resp.text:
-                            try:
-                                inv_data = inv_resp.json()
-                                if isinstance(inv_data, dict):
-                                    real_inv_no = inv_data.get('invoiceNumber') or inv_data.get('orderNumber') or inv_resp.text
-                                else:
-                                    real_inv_no = str(inv_data)
-                            except Exception:
-                                real_inv_no = inv_resp.text.strip('\"')
-                            
-                            if real_inv_no:
-                                vals['sage_invoice_number'] = real_inv_no
-                    except Exception as ie:
-                        _logger.warning("Failed to auto-invoice sales order %s in Sage: %s", sage_inv_no, str(ie))
-                        # If invoicing fails due to network, queue the invoice generation call
-                        status_code = ie.response.status_code if hasattr(ie, 'response') and ie.response is not None else 0
-                        if status_code == 0 or status_code >= 500:
-                            self.env['havano.sage.queue'].sudo().create({
-                                'name': f"Invoice: {order.name}",
-                                'res_model': 'sale.order',
-                                'res_id': order.id,
-                                'payload': '{}',
-                                'endpoint': f"/sales/orders/{sage_inv_no}/invoice",
-                                'method': 'post',
-                                'state': 'pending'
-                            })
                     
                 order.with_context(skip_sage_sync=True).write(vals)
-                _logger.info("Successfully synced sales order %s to Sage (Sage No: %s)", order.name, vals.get('sage_invoice_number', sage_inv_no))
+                _logger.info("Successfully synced sales order %s to Sage (Sage No: %s). Response Text: %s", order.name, vals.get('sage_invoice_number', sage_inv_no), response.text)
             except requests.exceptions.RequestException as e:
                 # Handle friendly errors or queue if offline
                 error_detail = e.response.text if hasattr(e, 'response') and e.response is not None else str(e)
