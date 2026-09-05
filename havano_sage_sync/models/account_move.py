@@ -43,16 +43,56 @@ class AccountMove(models.Model):
                             _logger.warning("Sales Order %s is not synced to Sage yet. Skipping invoice push.", so.name)
                             move.message_post(body=f"Sage Sync: Linked Sales Order {so.name} is not synced to Sage yet. Cannot push Invoice.")
                             continue
+
+                        # Step 1: Ensure the SO is confirmed (not a Quotation) in Sage before invoicing.
+                        # Queue the conversion to a Sales Order.
+                        if so.state == 'sale' and sage_inv_no:
+                            convert_endpoint = f"/Sales/orders/{sage_inv_no}"
+                            import json
+                            so_user = so.user_id or so.create_uid or self.env.user
+                            so_agent_id = so_user.sage_agent_id if so_user and hasattr(so_user, 'sage_agent_id') and so_user.sage_agent_id else None
+                            convert_payload = {
+                                "customerCode": so.partner_id.ref or f"CUST{so.partner_id.id}",
+                                "externalOrderNo": so.name or "",
+                                "orderDate": so.date_order.strftime("%Y-%m-%dT%H:%M:%S") if so.date_order else None,
+                                "agentId": so_agent_id,
+                                "isQuotation": False,
+                                "lines": [
+                                    {
+                                        "itemCode": line.product_id.default_code or line.product_id.product_tmpl_id.default_code or f"PROD{line.product_id.id}",
+                                        "quantity": float(line.product_uom_qty),
+                                        "unitPrice": float(line.price_subtotal / line.product_uom_qty) if line.product_uom_qty else 0.0,
+                                        "taxTypeID": 1 if line.tax_ids else 5,
+                                        "warehouseCode": "Mstr"
+                                    }
+                                    for line in so.order_line if line.product_id
+                                ]
+                            }
                             
-                        # Trigger Invoice Creation in Sage
+                            self.env['havano.sage.queue'].sudo().create({
+                                'name': f'Quote Conversion {so.name}',
+                                'res_model': 'sale.order',
+                                'res_id': so.id,
+                                'payload': json.dumps(convert_payload),
+                                'endpoint': convert_endpoint,
+                                'method': 'put',
+                                'state': 'pending'
+                            })
+
+                        # Step 2: Trigger Invoice Creation in Sage (queued after conversion)
                         endpoint = f"/Sales/orders/{sage_inv_no}/invoice"
-                        url = f"{api_url.rstrip('/')}{endpoint}"
-                        
-                        response = requests.post(url, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
-                        response.raise_for_status()
+                        self.env['havano.sage.queue'].sudo().create({
+                            'name': f'Invoice {move.name}',
+                            'res_model': 'account.move',
+                            'res_id': move.id,
+                            'payload': '{}',  # Empty payload for POST to invoice
+                            'endpoint': endpoint,
+                            'method': 'post',
+                            'state': 'pending'
+                        })
                         
                         move.write({'is_sage_synced': True})
-                        move.message_post(body=f"Sage Sync: Successfully triggered Invoice creation for Sales Order {sage_inv_no} in Sage.")
+                        _logger.info("Queued Sales Invoice %s for background Sage sync", move.name)
 
                 # Handle Vendor Bills (Purchase)
                 elif move.move_type == 'in_invoice':
@@ -73,24 +113,27 @@ class AccountMove(models.Model):
                             
                         # Trigger Invoice Creation in Sage
                         endpoint = f"/Purchase/orders/{sage_inv_no}/invoice"
-                        url = f"{api_url.rstrip('/')}{endpoint}"
-                        
-                        # Provide supplierInvoiceNo
+                        import json
                         payload = {
                             "supplierInvoiceNo": move.ref or move.name,
                             "orderNumber": sage_inv_no
                         }
+                        if po.sage_grv_number:
+                            payload["grvNumber"] = po.sage_grv_number
                         
-                        response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
-                        response.raise_for_status()
+                        self.env['havano.sage.queue'].sudo().create({
+                            'name': f'Vendor Bill {move.name}',
+                            'res_model': 'account.move',
+                            'res_id': move.id,
+                            'payload': json.dumps(payload),
+                            'endpoint': endpoint,
+                            'method': 'post',
+                            'state': 'pending'
+                        })
                         
                         move.write({'is_sage_synced': True})
-                        move.message_post(body=f"Sage Sync: Successfully triggered Bill creation for Purchase Order {sage_inv_no} in Sage.")
+                        _logger.info("Queued Vendor Bill %s for background Sage sync", move.name)
 
-            except requests.exceptions.RequestException as e:
-                error_detail = e.response.text if hasattr(e, 'response') and e.response is not None else str(e)
-                _logger.error("Sage Sync API Error for Invoice %s: %s", move.name, error_detail)
-                move.message_post(body=f"Sage Sync Failed: {error_detail}")
             except Exception as e:
                 _logger.error("Sage Sync Error for Invoice %s: %s", move.name, str(e))
                 move.message_post(body=f"Sage Sync Failed: Unexpected Error - {str(e)}")

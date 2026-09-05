@@ -62,7 +62,8 @@ class SaleOrder(models.Model):
         timeout = int(self.env['ir.config_parameter'].sudo().get_param('havano_sage_sync.timeout', default=10))
 
         for order in self:
-            agent_id = order.user_id.sage_agent_id if order.user_id and hasattr(order.user_id, 'sage_agent_id') and order.user_id.sage_agent_id else None
+            user = order.user_id or order.create_uid or self.env.user
+            agent_id = user.sage_agent_id if user and hasattr(user, 'sage_agent_id') and user.sage_agent_id else None
             
             is_quotation = order.state in ['draft', 'sent']
             
@@ -88,69 +89,48 @@ class SaleOrder(models.Model):
                     warehouse_code = "Mstr"
                     
                 payload["lines"].append({
-                    "itemCode": line.product_id.default_code or f"PROD{line.product_id.id}",
+                    "itemCode": line.product_id.default_code or line.product_id.product_tmpl_id.default_code or f"PROD{line.product_id.id}",
                     "quantity": float(line.product_uom_qty),
-                    "unitPrice": float(line.price_unit),
-                    "taxTypeID": 1,
+                    "unitPrice": float(line.price_subtotal / line.product_uom_qty) if line.product_uom_qty else 0.0,
+                    "taxTypeID": 1 if line.tax_ids else 5,
                     "warehouseCode": warehouse_code
                 })
             
             if is_update:
                 endpoint = f"/Sales/orders/{order.name}"
-                url = f"{api_url.rstrip('/')}{endpoint}"
-                method = requests.put
+                method = 'put'
             else:
                 endpoint = "/Sales/orders"
-                url = f"{api_url.rstrip('/')}{endpoint}"
-                method = requests.post
+                method = 'post'
             
-            # Log payload for diagnostics
-            _logger.info("Sage Sales Order %s Payload for %s (Is Update: %s): %s", method.__name__.upper(), order.name, is_update, json.dumps(payload))
+            # Create a queue record for the background worker to handle the sync
+            # Always queue it up immediately to avoid blocking the UI
+            existing = self.env['havano.sage.queue'].sudo().search([
+                ('res_model', '=', 'sale.order'),
+                ('res_id', '=', order.id),
+                ('state', 'in', ['pending', 'failed'])
+            ], limit=1)
             
-            try:
-                response = method(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
-                response.raise_for_status()
-                
-                resp_data = response.json() if response.text else {}
-                sage_inv_no = resp_data.get('orderNumber')
-                
-                vals = {'is_sage_synced': True}
-                
-                # Only set sage_invoice_number if it's new (not an update)
-                if sage_inv_no and not is_update:
-                    vals['sage_invoice_number'] = sage_inv_no
-                    
-                order.with_context(skip_sage_sync=True).write(vals)
-                _logger.info("Successfully synced sales order/quote %s to Sage (Sage No: %s). Response Text: %s", order.name, vals.get('sage_invoice_number', sage_inv_no), response.text)
-            except requests.exceptions.RequestException as e:
-                # Handle friendly errors or queue if offline
-                error_detail = e.response.text if hasattr(e, 'response') and e.response is not None else str(e)
-                status_code = e.response.status_code if hasattr(e, 'response') and e.response is not None else 0
-                
-                # If network error or timeout, queue it
-                if status_code == 0 or status_code >= 500:
-                    self.env['havano.sage.queue'].sudo().create({
-                        'name': f'Sales Order {order.name}',
-                        'res_model': 'sale.order',
-                        'res_id': order.id,
-                        'payload': json.dumps(payload),
-                        'endpoint': endpoint,
-                        'method': 'put' if is_update else 'post',
-                        'error_message': f'Queued due to: {str(e)}'
-                    })
-                    order.message_post(body=f"Sage Sync Queued: Network error or server offline. Will retry automatically.")
-                else:
-                    # Clean up 400 Bad Request JSON
-                    try:
-                        err_json = json.loads(error_detail)
-                        friendly_msg = err_json.get('message') or err_json.get('title') or str(err_json)
-                    except Exception:
-                        friendly_msg = error_detail[:200] if error_detail else "Unknown Error (Please verify your network connection and payload)"
-                        
-                    if status_code == 405:
-                        friendly_msg = f"API Endpoint configuration error (Method Not Allowed). Method {'PUT' if is_update else 'POST'} not allowed on {endpoint}."
-                        
-                    full_error = f"Sage rejected the sync: {friendly_msg}"
-                    _logger.error("Failed to sync sales order %s to Sage: %s", order.name, full_error)
-                    order.message_post(body=f"Sage Sync Failed: {full_error}. Please correct the issue and manually retry if needed.")
-                    # Do NOT raise UserError here so the Odoo workflow can continue!
+            if existing:
+                existing.write({
+                    'payload': json.dumps(payload),
+                    'endpoint': endpoint,
+                    'method': method,
+                    'state': 'pending',
+                    'retry_count': 0,
+                    'error_message': False
+                })
+            else:
+                self.env['havano.sage.queue'].sudo().create({
+                    'name': f'Sales Order {order.name}',
+                    'res_model': 'sale.order',
+                    'res_id': order.id,
+                    'payload': json.dumps(payload),
+                    'endpoint': endpoint,
+                    'method': method,
+                    'state': 'pending'
+                })
+            
+            # Optimistically mark it as synced to avoid downstream blocks
+            order.with_context(skip_sage_sync=True).write({'is_sage_synced': True})
+            _logger.info("Queued sales order/quote %s for background Sage sync", order.name)

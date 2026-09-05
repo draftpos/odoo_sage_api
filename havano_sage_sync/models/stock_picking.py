@@ -17,8 +17,9 @@ class StockPicking(models.Model):
             if picking.state == 'done' and picking.picking_type_code == 'incoming' and picking.purchase_id:
                 order = picking.purchase_id
                 
-                # Only push GRV if it's synced to Sage and we haven't already processed a GRV for it
-                if order.is_sage_synced and order.sage_invoice_number:
+                # Queue GRV for sync. If sage_invoice_number is missing, 
+                # the background queue will wait for the PO to sync first.
+                if order.is_sage_synced:
                     picking._push_grv_to_sage(order)
                     
         return res
@@ -40,7 +41,7 @@ class StockPicking(models.Model):
                     warehouse_code = "Mstr"
                 
                 lines_payload.append({
-                    "itemCode": move.product_id.default_code or f"PROD{move.product_id.id}",
+                    "itemCode": move.product_id.default_code or move.product_id.product_tmpl_id.default_code or f"PROD{move.product_id.id}",
                     "quantityToProcess": int(move.quantity),
                     "warehouseCode": warehouse_code
                 })
@@ -58,33 +59,13 @@ class StockPicking(models.Model):
         
         grv_url = f"{api_url.rstrip('/')}/Purchase/orders/grv"
         
-        try:
-            _logger.info("Sending GRV payload for %s on picking %s: %s", order.name, self.name, json.dumps(grv_payload))
-            grv_resp = requests.post(grv_url, json=grv_payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
-            grv_resp.raise_for_status()
-            
-            grv_data = grv_resp.json() if grv_resp.text else {}
-            grv_number = grv_data.get('grvNumber') or grv_data.get('GrvNumber') or grv_data.get('grv_number')
-            
-            if grv_number:
-                order.with_context(skip_sage_sync=True).write({'sage_grv_number': grv_number})
-                _logger.info("Successfully captured GRV number %s for PO %s", grv_number, order.name)
-            else:
-                _logger.info("GRV processed for PO %s (no GRV number in response)", order.name)
-                
-            self.message_post(body=f"Successfully synced GRV to Sage for {order.name}.")
-                
-        except requests.exceptions.RequestException as e:
-            error_detail = e.response.text if hasattr(e, 'response') and e.response is not None else str(e)
-            _logger.warning("Failed to process GRV in Sage for PO %s: %s", order.name, error_detail)
-            
-            self.env['havano.sage.queue'].sudo().create({
-                'name': f'GRV for {order.name}',
-                'res_model': 'stock.picking',
-                'res_id': self.id,
-                'payload': json.dumps(grv_payload),
-                'endpoint': '/Purchase/orders/grv',
-                'method': 'post',
-                'error_message': f'Queued due to: {str(e)}'
-            })
-            self.message_post(body=f"GRV Sync Queued or Failed: {error_detail}")
+        self.env['havano.sage.queue'].sudo().create({
+            'name': f'GRV for {order.name}',
+            'res_model': 'stock.picking',
+            'res_id': self.id,
+            'payload': json.dumps(grv_payload),
+            'endpoint': '/Purchase/orders/grv',
+            'method': 'post',
+            'state': 'pending'
+        })
+        self.message_post(body=f"GRV Sync Queued for {order.name}")

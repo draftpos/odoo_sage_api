@@ -48,8 +48,11 @@ class ProductTemplate(models.Model):
                 
             price_list_name = self.env['ir.config_parameter'].sudo().get_param('havano_sage_sync.price_list_name', default='Retail')
             
+            variant = record.product_variant_id
+            variant_id = variant.id if variant else record.id
+            
             payload = {
-                "code": record.default_code or f"PROD{record.id}",
+                "code": record.default_code or f"PROD{variant_id}",
                 "description": record.name,
                 "isServiceItem": False,
                 "active": record.active,
@@ -68,54 +71,21 @@ class ProductTemplate(models.Model):
             
             endpoint = "/inventory"
             url = f"{api_url.rstrip('/')}{endpoint}"
+            endpoint = "/inventory"
             
-            try:
-                # Intelligent Upsert: Try PUT (update). If not found (404/500), fallback to POST (create).
-                response = requests.put(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
-                if response.status_code not in (200, 204) and ("not found" in response.text.lower() or "stock item" in response.text.lower()):
-                    # Fallback to POST
-                    response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
-                
-                response.raise_for_status()
-                is_new_product = response.status_code == 201
-                record.with_context(skip_sage_sync=True).write({'is_sage_synced': True})
-                _logger.info("Successfully synced product %s to Sage", record.name)
-                
-                # Only link to warehouse if this was a brand new product (POST = 201)
-                # For existing products (PUT = 200), they are already linked - skip to avoid error
-                if is_new_product:
-                    try:
-                        wh_payload = {
-                            "itemCode": payload["code"],
-                            "warehouseCode": "Mstr"
-                        }
-                        wh_url = f"{api_url.rstrip('/')}/Inventory/warehouse"
-                        wh_resp = requests.post(wh_url, json=wh_payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
-                        # 500 with "already linked" message = already correct, not an actual error
-                        if wh_resp.status_code == 500 and "already" in wh_resp.text.lower():
-                            _logger.info("Product %s already linked to Mstr warehouse", record.name)
-                        else:
-                            wh_resp.raise_for_status()
-                            _logger.info("Successfully linked product %s to Mstr warehouse", record.name)
-                    except requests.exceptions.RequestException as wh_e:
-                        wh_error = wh_e.response.text if hasattr(wh_e, 'response') and wh_e.response is not None else str(wh_e)
-                        _logger.warning("Could not link product %s to warehouse Mstr: %s", record.name, wh_error)
-                    
-            except requests.exceptions.RequestException as e:
-                error_detail = e.response.text if hasattr(e, 'response') and e.response is not None else str(e)
-                status_code = e.response.status_code if hasattr(e, 'response') and e.response is not None else 0
-                full_error = f"{str(e)} - Details: {error_detail}"
-                _logger.error("Failed to sync product %s to Sage: %s", record.name, full_error)
-                record.message_post(body=f"Sage Sync Failed: {full_error}")
-                
-                # If network error or server error, queue it
-                if status_code == 0 or status_code >= 500:
-                    self.env['havano.sage.queue'].sudo().create({
-                        'name': record.name,
-                        'res_model': 'product.template',
-                        'res_id': record.id,
-                        'payload': json.dumps(payload),
-                        'endpoint': endpoint,
-                        'method': 'post' if is_create else 'put',
-                        'state': 'pending'
-                    })
+            # Create a queue record for the background worker to handle the sync
+            # Always queue it up immediately to avoid blocking the UI
+            method = 'post' if is_create else 'put'
+            self.env['havano.sage.queue'].sudo().create({
+                'name': record.name,
+                'res_model': 'product.template',
+                'res_id': record.id,
+                'payload': json.dumps(payload),
+                'endpoint': endpoint,
+                'method': method,
+                'state': 'pending'
+            })
+            
+            # Optimistically mark it as synced to avoid downstream blocks
+            record.with_context(skip_sage_sync=True).write({'is_sage_synced': True})
+            _logger.info("Queued product %s for background Sage sync", record.name)

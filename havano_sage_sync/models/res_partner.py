@@ -70,33 +70,20 @@ class ResPartner(models.Model):
             
             # Determine if supplier or customer
             endpoint = "/suppliers" if record.supplier_rank > 0 else "/customers"
-            url = f"{api_url.rstrip('/')}{endpoint}"
             
-            try:
-                # Intelligent Upsert: Try PUT (update). If not found, try POST (create).
-                response = requests.put(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
-                if response.status_code != 200 and "not found" in response.text.lower():
-                    # Fallback to POST
-                    response = requests.post(url, json=payload, headers={"Content-Type": "application/json", "Connection": "close"}, timeout=timeout)
-                
-                response.raise_for_status()
-                record.with_context(skip_sage_sync=True).write({'is_sage_synced': True})
-                _logger.info("Successfully synced partner %s to Sage", record.name)
-            except requests.exceptions.RequestException as e:
-                error_detail = e.response.text if hasattr(e, 'response') and e.response is not None else str(e)
-                status_code = e.response.status_code if hasattr(e, 'response') and e.response is not None else 0
-                full_error = f"{str(e)} - Details: {error_detail}"
-                _logger.error("Failed to sync partner %s to Sage: %s", record.name, full_error)
-                record.message_post(body=f"Sage Sync Failed: {full_error}")
-                
-                # If network error or server error, queue it
-                if status_code == 0 or status_code >= 500:
-                    self.env['havano.sage.queue'].sudo().create({
-                        'name': record.name,
-                        'res_model': 'res.partner',
-                        'res_id': record.id,
-                        'payload': json.dumps(payload),
-                        'endpoint': endpoint,
-                        'method': 'post' if is_create else 'put',
-                        'state': 'pending'
-                    })
+            # Create a queue record for the background worker to handle the sync
+            # Always queue it up immediately to avoid blocking the UI
+            method = 'post' if is_create else 'put'
+            self.env['havano.sage.queue'].sudo().create({
+                'name': record.name,
+                'res_model': 'res.partner',
+                'res_id': record.id,
+                'payload': json.dumps(payload),
+                'endpoint': endpoint,
+                'method': method,
+                'state': 'pending'
+            })
+            
+            # Optimistically mark it as synced to avoid downstream blocks
+            record.with_context(skip_sage_sync=True).write({'is_sage_synced': True})
+            _logger.info("Queued partner %s for background Sage sync", record.name)

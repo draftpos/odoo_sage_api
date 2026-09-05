@@ -20,6 +20,7 @@ class MasterSyncWizard(models.TransientModel):
     sync_agents = fields.Boolean("Agents (Salespersons)", default=False)
     sync_sales = fields.Boolean("Sales Orders", default=False)
     sync_purchases = fields.Boolean("Purchase Orders", default=False)
+    sync_gl_accounts = fields.Boolean("GL Accounts", default=False)
     
     def action_start_sync(self):
         self.ensure_one()
@@ -41,6 +42,8 @@ class MasterSyncWizard(models.TransientModel):
                 results.append(self._pull_sales(api_url, timeout))
             if self.sync_purchases:
                 results.append(self._pull_purchases(api_url, timeout))
+            if self.sync_gl_accounts:
+                results.append(self._pull_gl_accounts(api_url, timeout))
         else:
             if self.sync_customers:
                 results.append(self._push_customers(api_url, timeout))
@@ -84,9 +87,11 @@ class MasterSyncWizard(models.TransientModel):
                     code = cust.get('code')
                     name = cust.get('description') or code
                     if not code: continue
-                    if not Partner.search(['|', ('ref', '=', code), ('name', '=', name)], limit=1):
+                    name = name.strip()
+                    existing = Partner.search(['|', ('ref', '=', code), ('name', '=ilike', name)], limit=1)
+                    if not existing:
                         with self.env.cr.savepoint():
-                            Partner.create({
+                            Partner.with_context(skip_duplicate_check=True).create({
                                 'name': name, 
                                 'ref': code, 
                                 'is_sage_synced': True, 
@@ -94,6 +99,12 @@ class MasterSyncWizard(models.TransientModel):
                                 'contact_type': 'customer'
                             })
                             created_cust += 1
+                    else:
+                        existing.with_context(skip_duplicate_check=True).write({
+                            'ref': code,
+                            'is_sage_synced': True,
+                            'is_customer': True
+                        })
                 messages.append(f"Customers: Created {created_cust} of {len(customers)}.")
         except Exception as e:
             messages.append(f"Error Customers: {str(e)}")
@@ -110,9 +121,11 @@ class MasterSyncWizard(models.TransientModel):
                     code = supp.get('code')
                     name = supp.get('description') or code
                     if not code: continue
-                    if not Partner.search(['|', ('ref', '=', code), ('name', '=', name)], limit=1):
+                    name = name.strip()
+                    existing = Partner.search(['|', ('ref', '=', code), ('name', '=ilike', name)], limit=1)
+                    if not existing:
                         with self.env.cr.savepoint():
-                            Partner.create({
+                            Partner.with_context(skip_duplicate_check=True).create({
                                 'name': name, 
                                 'ref': code, 
                                 'is_sage_synced': True, 
@@ -120,6 +133,12 @@ class MasterSyncWizard(models.TransientModel):
                                 'contact_type': 'supplier'
                             })
                             created_supp += 1
+                    else:
+                        existing.with_context(skip_duplicate_check=True).write({
+                            'ref': code,
+                            'is_sage_synced': True,
+                            'is_supplier': True
+                        })
                 messages.append(f"Suppliers: Created {created_supp} of {len(suppliers)}.")
         except Exception as e:
             messages.append(f"Error Suppliers: {str(e)}")
@@ -154,13 +173,15 @@ class MasterSyncWizard(models.TransientModel):
                         existing = User.search([('login', '=', login)], limit=1)
                         
                     if existing:
-                        existing.write({'sage_agent_id': int(agent_id) if str(agent_id).isdigit() else 0})
+                        existing.with_context(skip_duplicate_check=True).write({'sage_agent_id': int(agent_id) if str(agent_id).isdigit() else 0})
                         updated += 1
                     else:
-                        new_user = User.create({
+                        base_group = self.env.ref('base.group_user', raise_if_not_found=False)
+                        new_user = User.with_context(skip_duplicate_check=True).create({
                             'name': name,
                             'login': login,
                             'sage_agent_id': int(agent_id) if str(agent_id).isdigit() else 0,
+                            'groups_id': [(4, base_group.id)] if base_group else False
                         })
                         try:
                             group = self.env.ref('sales_team.group_sale_salesman', raise_if_not_found=False)
@@ -394,6 +415,60 @@ class MasterSyncWizard(models.TransientModel):
             return f"Pulled Purchase Orders: Created {created} of {len(orders)}."
         except Exception as e:
             return f"Error Pulling Purchase Orders: {str(e)}"
+
+    def _pull_gl_accounts(self, api_url, timeout):
+        try:
+            url = f"{api_url.rstrip('/')}/GLAccounts"
+            response = requests.get(url, timeout=timeout)
+            response.raise_for_status()
+            accounts = response.json()
+            if not accounts: return "No GL Accounts found in Sage."
+            
+            AccountAccount = self.env['account.account'].sudo().with_context(skip_sage_sync=True)
+            created = 0
+            updated = 0
+            for acc in accounts:
+                link_id = acc.get('accountLink') or acc.get('AccountLink')
+                code = str(acc.get('account') or acc.get('Account') or '').strip()
+                desc = (acc.get('description') or acc.get('Description') or code).strip()
+                if not code or not link_id: continue
+                
+                # Try to find by sage_account_link first
+                existing = AccountAccount.search([('sage_account_link', '=', link_id)], limit=1)
+                
+                # If not found by link, try by exact code match (excluding subaccount markers if any)
+                if not existing:
+                    existing = AccountAccount.search([('code', '=', code)], limit=1)
+                
+                if existing:
+                    # Update it if it doesn't have the link yet or needs fixing
+                    if existing.sage_account_link != link_id or not existing.is_sage_synced:
+                        existing.write({
+                            'sage_account_link': link_id,
+                            'is_sage_synced': True
+                        })
+                        updated += 1
+                else:
+                    # We have to create it. We need an account type. 
+                    # For a simple sync, we can put them into a generic expense or current asset 
+                    # depending on the code, or just 'expense' as a safe fallback since Odoo requires it.
+                    # We'll use 'expense' and users can change it if needed.
+                    try:
+                        with self.env.cr.savepoint():
+                            AccountAccount.create({
+                                'name': desc,
+                                'code': code,
+                                'account_type': 'expense', # Default fallback type
+                                'sage_account_link': link_id,
+                                'is_sage_synced': True
+                            })
+                            created += 1
+                    except Exception as e:
+                        _logger.warning("Skipped creating GL Account %s due to error: %s", code, str(e))
+                        
+            return f"Pulled GL Accounts: Created {created}, Updated {updated} of {len(accounts)}."
+        except Exception as e:
+            return f"Error Pulling GL Accounts: {str(e)}"
 
     def _push_customers(self, api_url, timeout):
         Partner = self.env['res.partner'].sudo()
