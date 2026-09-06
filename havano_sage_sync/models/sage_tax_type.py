@@ -17,6 +17,13 @@ class SageTaxType(models.Model):
     tax_rate = fields.Float(string='Tax Rate (%)', readonly=True)
     is_active = fields.Boolean(string='Active', readonly=True, default=True)
 
+    _rec_name = 'description'
+
+    @api.depends('code', 'description', 'tax_rate')
+    def _compute_display_name(self):
+        for rec in self:
+            rec.display_name = f"[{rec.code}] {rec.description} ({rec.tax_rate}%)" if rec.code else (rec.description or '')
+
     def name_get(self):
         result = []
         for rec in self:
