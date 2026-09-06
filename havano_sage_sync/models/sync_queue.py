@@ -279,8 +279,11 @@ class HavanoSageQueue(models.Model):
             input_tax_acc_id = batch.sage_input_tax_acc_id if batch.sage_input_tax_acc_id and batch.sage_input_tax_acc_id != 1 else vat_control_acc_id
             output_tax_acc_id = batch.sage_output_tax_acc_id if batch.sage_output_tax_acc_id and batch.sage_output_tax_acc_id != 1 else vat_control_acc_id
             
-            input_tax_type_id = batch.sage_input_tax.tax_type_id if batch.sage_input_tax else (batch.sage_input_tax_id or 1)
-            output_tax_type_id = batch.sage_output_tax.tax_type_id if batch.sage_output_tax else (batch.sage_output_tax_id or 1)
+            first_debit_tax = next((l.sage_tax_id.tax_type_id for l in batch.line_ids if l.debit > 0 and l.sage_tax_id), None)
+            first_credit_tax = next((l.sage_tax_id.tax_type_id for l in batch.line_ids if l.credit > 0 and l.sage_tax_id), None)
+
+            input_tax_type_id = batch.sage_input_tax.tax_type_id if batch.sage_input_tax else (first_debit_tax or batch.sage_input_tax_id or 1)
+            output_tax_type_id = batch.sage_output_tax.tax_type_id if batch.sage_output_tax else (first_credit_tax or batch.sage_output_tax_id or 1)
             
             batch_payload = {
                 "cBatchNo": batch.name,
@@ -439,7 +442,7 @@ class HavanoSageQueue(models.Model):
                 elif line.credit and batch.sage_output_tax:
                     tax_id = batch.sage_output_tax.tax_type_id
                 else:
-                    tax_id = batch.sage_input_tax_id if line.debit else (batch.sage_output_tax_id or 1)
+                    tax_id = 0
                     
                 tx_date = line.date.strftime('%Y-%m-%dT00:00:00') if line.date else f"{fields.Date.context_today(self)}T00:00:00"
                 line_payload = {
