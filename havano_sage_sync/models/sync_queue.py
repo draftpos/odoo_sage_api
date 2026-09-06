@@ -184,6 +184,8 @@ class HavanoSageQueue(models.Model):
             timeout = max(timeout, 60)
 
             sage_gl_by_link = {}
+            sage_gl_by_link_desc = {}
+            sage_gl_by_link_code = {}
             sage_gl_by_code = {}
             sage_gl_by_sub = {}
             sage_gl_by_desc = {}
@@ -208,6 +210,8 @@ class HavanoSageQueue(models.Model):
                     acc_link = acc.get('accountLink') or acc.get('AccountLink')
                     if acc_link is not None:
                         sage_gl_by_link[acc_link] = acc_link
+                        sage_gl_by_link_desc[acc_link] = acc_desc
+                        sage_gl_by_link_code[acc_link] = str(acc_key or acc_sub or '').strip()
                         if acc_key:
                             sage_gl_by_code[str(acc_key).strip()] = acc_link
                         if acc_sub:
@@ -324,7 +328,18 @@ class HavanoSageQueue(models.Model):
                     # 1. Check existing valid sage_account_link on account
                     if hasattr(acc_rec, 'sage_account_link') and acc_rec.sage_account_link:
                         if acc_rec.sage_account_link in sage_gl_by_link:
-                            account_id = acc_rec.sage_account_link
+                            s_desc = (sage_gl_by_link_desc.get(acc_rec.sage_account_link) or '').lower()
+                            s_code = (sage_gl_by_link_code.get(acc_rec.sage_account_link) or '').lower()
+                            raw_code = str(acc_rec.code or '').strip().split('>')[-1].lower()
+                            raw_name = (acc_rec.name or '').strip().lower()
+
+                            # Only trust the cached link if it plausibly matches the Odoo account
+                            if (s_desc and (raw_name in s_desc or s_desc in raw_name)) or (s_code and (raw_code in s_code or s_code in raw_code)):
+                                account_id = acc_rec.sage_account_link
+                            else:
+                                _logger.warning("Rejecting invalid cached sage_account_link %s for '%s' (points to Sage account '%s' [%s])",
+                                                acc_rec.sage_account_link, acc_rec.display_name, s_desc, s_code)
+                                acc_rec.with_context(skip_sage_sync=True).write({'sage_account_link': False})
                     
                     # 2. Match by code / normalized code / suffix
                     if not account_id and acc_rec.code:
